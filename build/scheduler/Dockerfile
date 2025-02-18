@@ -25,5 +25,3 @@ FROM --platform=${BUILDPLATFORM} $DISTROLESS_BASE_IMAGE
 WORKDIR /bin
 COPY --from=builder /workspace/bin/kube-scheduler .
 USER 65532:65532
-
-ENTRYPOINT ["/bin/kube-scheduler"]

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: annotated-carbon-aware-scheduler-pod
+  annotations:
+    carbon-aware-scheduler.kubernetes.io/carbon-intensity-threshold : "200.0"
+spec:
+  schedulerName: carbon-aware-scheduler
+  containers:
+  - name: pod-with-carbon-aware-annotated-container
+    image: registry.k8s.io/pause:3.8
