@@ -62,6 +62,27 @@ data:
     leaderElection:
       leaderElect: false 
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carbon-aware-peak-schedules
+  namespace: kube-system
+data:
+  schedules.yaml: |
+    # Peak schedule configuration using standard cron format
+    # Format: day-of-week start-time end-time
+    # day-of-week: 0-6 (Sunday=0)
+    # time format: HH:MM in 24-hour format
+    schedules:
+      # Monday-Friday peak hours (typical 4pm-9pm peak period)
+      - dayOfWeek: "1-5"
+        startTime: "16:00"
+        endTime: "21:00"
+      # Weekend peak hours (example different schedule)
+      - dayOfWeek: "0,6" 
+        startTime: "13:00"
+        endTime: "19:00"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -93,6 +114,14 @@ spec:
         env:
         - name: ELECTRICITY_MAP_API_KEY
           value: "hoc7ohOR0B9jrdWwNX3h"
+        - name: CARBON_INTENSITY_THRESHOLD
+          value: "200.0"
+        - name: PEAK_CARBON_INTENSITY_THRESHOLD
+          value: "300.0"
+        - name: MAX_SCHEDULING_DELAY
+          value: "24h"
+        - name: PEAK_SCHEDULES_PATH
+          value: "/etc/kubernetes/carbon-aware-scheduler/peak-schedules.yaml"
         livenessProbe:
           httpGet:
             path: /healthz
@@ -113,9 +142,15 @@ spec:
         volumeMounts:
           - name: config-volume
             mountPath: /etc/kubernetes/carbon-aware-scheduler
+          - name: peak-schedules-volume
+            mountPath: /etc/kubernetes/carbon-aware-scheduler/peak-schedules.yaml
+            subPath: schedules.yaml
       hostNetwork: false
       hostPID: false
       volumes:
         - name: config-volume
           configMap:
             name: carbon-aware-scheduler-config
+        - name: peak-schedules-volume
+          configMap:
+            name: carbon-aware-peak-schedules

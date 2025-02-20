@@ -17,13 +17,7 @@ limitations under the License.
 package main
 
 import (
-	"net/http"
 	"os"
-	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"k8s.io/component-base/cli"
 	_ "k8s.io/component-base/metrics/prometheus/clientgo" // for rest client metric registration
@@ -48,27 +42,7 @@ import (
 	_ "sigs.k8s.io/scheduler-plugins/apis/config/scheme"
 )
 
-func recordMetrics() {
-	go func() {
-		for {
-			carbonIntensity.Set(100)
-			time.Sleep(30 * time.Second)
-		}
-	}()
-}
-
-var (
-	carbonIntensity = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "carbonawarescheduler_carbonintensity",
-		Help: "The carbon intensity value from ElectrictyMap API",
-	})
-)
-
 func main() {
-	recordMetrics()
-	http.Handle("/metrics", promhttp.Handler())
-	http.ListenAndServe(":2112", nil)
-
 	command := app.NewSchedulerCommand(
 		app.WithPlugin(capacityscheduling.Name, capacityscheduling.New),
 		app.WithPlugin(coscheduling.Name, coscheduling.New),
