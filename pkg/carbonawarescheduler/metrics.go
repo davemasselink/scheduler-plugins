@@ -85,6 +85,38 @@ var (
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
+
+	// ElectricityRateGauge measures the current electricity rate
+	ElectricityRateGauge = metrics.NewGaugeVec(
+		&metrics.GaugeOpts{
+			Subsystem:      schedulerSubsystem,
+			Name:           "electricity_rate",
+			Help:           "Current electricity rate ($/kWh) for a given location",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"location", "period"}, // period can be "peak" or "off-peak"
+	)
+
+	// PriceBasedDelays counts scheduling delays due to price thresholds
+	PriceBasedDelays = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Subsystem:      schedulerSubsystem,
+			Name:           "price_delay_total",
+			Help:           "Number of scheduling delays due to electricity price thresholds",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"period"}, // "peak" or "off-peak"
+	)
+
+	// CostSavings estimates the cost savings from price-aware scheduling
+	CostSavings = metrics.NewCounter(
+		&metrics.CounterOpts{
+			Subsystem:      schedulerSubsystem,
+			Name:           "cost_savings_dollars",
+			Help:           "Estimated cost savings (in dollars) from price-aware scheduling",
+			StabilityLevel: metrics.ALPHA,
+		},
+	)
 )
 
 func init() {
@@ -96,4 +128,7 @@ func init() {
 	legacyregistry.MustRegister(CarbonSavings)
 	legacyregistry.MustRegister(JobsScheduled)
 	legacyregistry.MustRegister(AverageCarbonSavingsPerJob)
+	legacyregistry.MustRegister(ElectricityRateGauge)
+	legacyregistry.MustRegister(PriceBasedDelays)
+	legacyregistry.MustRegister(CostSavings)
 }

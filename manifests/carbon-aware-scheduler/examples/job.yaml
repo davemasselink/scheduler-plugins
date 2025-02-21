@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: carbon-aware-job
+spec:
+  # Retry up to 2 times if scheduling constraints aren't met
+  backoffLimit: 2
+  template:
+    metadata:
+      annotations:
+        # Higher thresholds for batch jobs that can be delayed
+        carbon-aware-scheduler.kubernetes.io/carbon-intensity-threshold: "350.0"
+        price-aware-scheduler.kubernetes.io/price-threshold: "0.25"
+        # Allow scheduling delay up to 6 hours
+        carbon-aware-scheduler.kubernetes.io/max-scheduling-delay: "6h"
+    spec:
+      schedulerName: carbon-aware-scheduler
+      containers:
+      - name: data-processor
+        image: data-processor:1.0
+        command:
+        - /process.sh
+        - /data/input
+        - /data/output
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2000m"
+          limits:
+            memory: "8Gi"
+            cpu: "4000m"
+        volumeMounts:
+        - name: input-data
+          mountPath: /data/input
+          readOnly: true
+        - name: output-data
+          mountPath: /data/output
+      volumes:
+      - name: input-data
+        persistentVolumeClaim:
+          claimName: input-data-pvc
+      - name: output-data
+        persistentVolumeClaim:
+          claimName: output-data-pvc
+      # Don't restart on failure, let the job controller handle retries
+      restartPolicy: Never
