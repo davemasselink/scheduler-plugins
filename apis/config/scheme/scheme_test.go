@@ -30,13 +30,9 @@ import (
 
 	"sigs.k8s.io/scheduler-plugins/apis/config"
 	v1 "sigs.k8s.io/scheduler-plugins/apis/config/v1"
-	"sigs.k8s.io/scheduler-plugins/pkg/coscheduling"
 	"sigs.k8s.io/scheduler-plugins/pkg/networkaware/networkoverhead"
 	"sigs.k8s.io/scheduler-plugins/pkg/networkaware/topologicalsort"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesources"
-	"sigs.k8s.io/scheduler-plugins/pkg/trimaran/loadvariationriskbalancing"
-	"sigs.k8s.io/scheduler-plugins/pkg/trimaran/lowriskovercommitment"
-	"sigs.k8s.io/scheduler-plugins/pkg/trimaran/targetloadpacking"
 	"sigs.k8s.io/yaml"
 )
 
@@ -90,12 +86,6 @@ profiles:
 					SchedulerName: "scheduler-plugins",
 					Plugins:       defaults.PluginsV1,
 					PluginConfig: []schedconfig.PluginConfig{
-						{
-							Name: coscheduling.Name,
-							Args: &config.CoschedulingArgs{
-								PermitWaitingTimeSeconds: 60,
-							},
-						},
 						{
 							Name: topologicalsort.Name,
 							Args: &config.TopologicalSortArgs{
@@ -257,65 +247,12 @@ func TestCodecsEncodePluginConfig(t *testing.T) {
 						SchedulerName: "scheduler-plugins",
 						PluginConfig: []schedconfig.PluginConfig{
 							{
-								Name: coscheduling.Name,
-								Args: &config.CoschedulingArgs{
-									PermitWaitingTimeSeconds: 10,
-								},
-							},
-							{
 								Name: noderesources.AllocatableName,
 								Args: &config.NodeResourcesAllocatableArgs{
 									Mode: config.Least,
 									Resources: []schedconfig.ResourceSpec{
 										{Name: string(corev1.ResourceCPU), Weight: 1000000},
 										{Name: string(corev1.ResourceMemory), Weight: 1},
-									},
-								},
-							},
-							{
-								Name: targetloadpacking.Name,
-								Args: &config.TargetLoadPackingArgs{
-									TrimaranSpec: config.TrimaranSpec{
-										MetricProvider: config.MetricProviderSpec{
-											Type:    config.Prometheus,
-											Address: "http://prometheus-k8s.monitoring.svc.cluster.local:9090",
-										},
-										WatcherAddress: "http://deadbeef:2020"},
-									TargetUtilization: 60,
-									DefaultRequests: corev1.ResourceList{
-										corev1.ResourceCPU: testCPUQuantity,
-									},
-									DefaultRequestsMultiplier: "1.8",
-								},
-							},
-							{
-								Name: loadvariationriskbalancing.Name,
-								Args: &config.LoadVariationRiskBalancingArgs{
-									TrimaranSpec: config.TrimaranSpec{
-										MetricProvider: config.MetricProviderSpec{
-											Type:               config.Prometheus,
-											Address:            "http://prometheus-k8s.monitoring.svc.cluster.local:9090",
-											InsecureSkipVerify: false,
-										},
-										WatcherAddress: "http://deadbeef:2020"},
-									SafeVarianceMargin:      v1.DefaultSafeVarianceMargin,
-									SafeVarianceSensitivity: v1.DefaultSafeVarianceSensitivity,
-								},
-							},
-							{
-								Name: lowriskovercommitment.Name,
-								Args: &config.LowRiskOverCommitmentArgs{
-									TrimaranSpec: config.TrimaranSpec{
-										MetricProvider: config.MetricProviderSpec{
-											Type:               config.Prometheus,
-											Address:            "http://prometheus-k8s.monitoring.svc.cluster.local:9090",
-											InsecureSkipVerify: false,
-										},
-										WatcherAddress: "http://deadbeef:2020"},
-									SmoothingWindowSize: v1.DefaultSmoothingWindowSize,
-									RiskLimitWeights: map[corev1.ResourceName]float64{
-										corev1.ResourceCPU:    v1.DefaultRiskLimitWeight,
-										corev1.ResourceMemory: v1.DefaultRiskLimitWeight,
 									},
 								},
 							},

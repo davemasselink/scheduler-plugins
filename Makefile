@@ -45,6 +45,28 @@ build-images:
 	DISTROLESS_BASE_IMAGE=$(DISTROLESS_BASE_IMAGE) \
 	EXTRA_ARGS=$(EXTRA_ARGS) hack/build-images.sh
 
+.PHONY: build-push-images
+build-push-images: EXTRA_ARGS="--push"
+build-push-images: build-images
+
+.PHONY: update-gomod
+update-gomod:
+	hack/update-gomod.sh
+
+.PHONY: unit-test
+unit-test: install-envtest
+	hack/unit-test.sh $(ARGS)
+
+.PHONY: install-envtest
+install-envtest:
+	hack/install-envtest.sh
+
+.PHONY: verify
+verify:
+	hack/verify-gomod.sh
+	hack/verify-gofmt.sh
+	hack/verify-crdgen.sh
+
 .PHONY: clean
 clean:
 	rm -rf ./bin
