@@ -8,8 +8,9 @@ The deployment consists of several key components:
 
 1. **ServiceAccount**: Required permissions for the scheduler
 2. **RBAC**: Role bindings for scheduler permissions
-3. **ConfigMap**: Configuration for the scheduler and peak hour schedules
-4. **Deployment**: The scheduler deployment itself
+3. **Secret**: API key for Electricity Map
+4. **ConfigMaps**: Configuration for the scheduler and TOU pricing schedules
+5. **Deployment**: The scheduler deployment itself
 
 ## Configuration
 
@@ -37,64 +38,81 @@ data:
       leaderElect: false
 ```
 
-### Peak Hour Schedules
+### Time-of-Use Pricing Schedules
 
-Peak hours are configured through a separate ConfigMap (`carbon-aware-peak-schedules`):
+Pricing schedules are configured through a ConfigMap (`carbon-aware-pricing-schedules`):
 
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: carbon-aware-peak-schedules
+  name: carbon-aware-pricing-schedules
   namespace: kube-system
 data:
   schedules.yaml: |
-    # Peak schedule configuration using standard cron format
+    # Time-of-use pricing schedule configuration
     # Format: day-of-week start-time end-time
     # day-of-week: 0-6 (Sunday=0)
     # time format: HH:MM in 24-hour format
     schedules:
-      # Monday-Friday peak hours (typical 4pm-9pm peak period)
+      # Monday-Friday peak pricing periods (4pm-9pm)
       - dayOfWeek: "1-5"
         startTime: "16:00"
         endTime: "21:00"
-      # Weekend peak hours (example different schedule)
+      # Weekend peak pricing periods (1pm-7pm)
       - dayOfWeek: "0,6" 
         startTime: "13:00"
         endTime: "19:00"
+```
+
+### API Key Configuration
+
+The Electricity Map API key is stored in a Kubernetes secret:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: carbon-aware-scheduler-secrets
+  namespace: kube-system
+type: Opaque
+data:
+  electricity-map-api-key: <base64-encoded-api-key>
 ```
 
 ### Environment Variables
 
 The scheduler is configured through environment variables in the deployment:
 
-- `ELECTRICITY_MAP_API_KEY`: API key for electricity data provider
+Carbon-Aware Configuration:
+- `ELECTRICITY_MAP_API_KEY`: API key from secret (required)
 - `CARBON_INTENSITY_THRESHOLD`: Base carbon intensity threshold (gCO2/kWh)
-- `PEAK_CARBON_INTENSITY_THRESHOLD`: Carbon intensity threshold during peak hours
 - `MAX_SCHEDULING_DELAY`: Maximum time to delay pod scheduling
-- `PEAK_SCHEDULES_PATH`: Path to peak schedules configuration file
 
-### Price-Aware Configuration
-
-For price-aware scheduling, additional environment variables are required:
-
+Time-of-Use Pricing Configuration:
 - `PRICING_ENABLED`: Enable price-aware scheduling ("true"/"false")
-- `PRICING_PROVIDER`: Pricing data provider (e.g., "genability")
-- `PRICING_API_KEY`: API key for the pricing provider
-- `PRICING_LOCATION_ID`: Location identifier for pricing data
-- `PRICING_PEAK_THRESHOLD`: Price threshold during peak hours ($/kWh)
-- `PRICING_OFF_PEAK_THRESHOLD`: Price threshold during off-peak hours ($/kWh)
+- `PRICING_PROVIDER`: Set to "tou" for time-of-use pricing
+- `PRICING_BASE_RATE`: Base electricity rate ($/kWh)
+- `PRICING_PEAK_RATE`: Peak rate multiplier (e.g., 1.5 for 50% higher)
 - `PRICING_MAX_DELAY`: Maximum delay for price-based scheduling
+- `PRICING_SCHEDULES_PATH`: Path to pricing schedules configuration file
 
 ## Deployment
 
-1. Create the required ConfigMaps:
+1. Create the API key secret:
 ```bash
-kubectl apply -f carbon-aware-scheduler-config.yaml
-kubectl apply -f carbon-aware-peak-schedules.yaml
+kubectl create secret generic carbon-aware-scheduler-secrets \
+  --from-literal=electricity-map-api-key=YOUR_API_KEY \
+  -n kube-system
 ```
 
-2. Deploy the scheduler:
+2. Create the required ConfigMaps:
+```bash
+kubectl apply -f carbon-aware-scheduler-config.yaml
+kubectl apply -f carbon-aware-pricing-schedules.yaml
+```
+
+3. Deploy the scheduler:
 ```bash
 kubectl apply -f carbon-aware-scheduler.yaml
 ```
@@ -139,7 +157,7 @@ metadata:
 The scheduler exposes metrics on port 10259 for Prometheus scraping:
 
 - `carbon_intensity_gauge`: Current carbon intensity
-- `electricity_rate_gauge`: Current electricity rate
+- `electricity_rate_gauge`: Current electricity rate based on TOU schedule
 - `scheduling_attempts_total`: Scheduling attempt counts
 - `pod_scheduling_latency_seconds`: Pod scheduling latency
 - `carbon_savings_total`: Estimated carbon savings
@@ -183,21 +201,17 @@ kubectl logs -n kube-system -l component=scheduler
 kubectl get pod <pod-name> -o yaml | grep schedulerName
 ```
 
-3. **API errors**: Check API key configuration:
+3. **API errors**: Check API key secret:
 ```bash
-kubectl get configmap -n kube-system carbon-aware-scheduler-config -o yaml
+kubectl get secret -n kube-system carbon-aware-scheduler-secrets -o yaml
 ```
 
-4. **Peak hours not working**: Verify peak schedules configuration:
+4. **TOU pricing not working**: Verify pricing schedules configuration:
 ```bash
-kubectl get configmap -n kube-system carbon-aware-peak-schedules -o yaml
-```
+kubectl get configmap -n kube-system carbon-aware-pricing-schedules -o yaml
 
-5. **Pricing issues**: Check pricing provider configuration:
-```bash
 # Check environment variables
 kubectl get deployment -n kube-system carbon-aware-scheduler -o yaml | grep PRICING
 
-# Check provider logs
+# Check scheduler logs
 kubectl logs -n kube-system -l component=scheduler | grep pricing
-```

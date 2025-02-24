@@ -42,22 +42,21 @@ type PeakHoursConfig struct {
 	Schedules                []Schedule `yaml:"schedules"`
 }
 
-// Schedule defines a time range for peak hours
+// Schedule defines a time range with its peak and off-peak rates
 type Schedule struct {
-	DayOfWeek string `yaml:"dayOfWeek"`
-	StartTime string `yaml:"startTime"`
-	EndTime   string `yaml:"endTime"`
+	DayOfWeek   string  `yaml:"dayOfWeek"`
+	StartTime   string  `yaml:"startTime"`
+	EndTime     string  `yaml:"endTime"`
+	PeakRate    float64 `yaml:"peakRate"`    // Rate in $/kWh during this time period
+	OffPeakRate float64 `yaml:"offPeakRate"` // Rate in $/kWh outside this time period
 }
 
 // PricingConfig holds configuration for price-aware scheduling
 type PricingConfig struct {
-	Enabled          bool    `yaml:"enabled"`
-	Provider         string  `yaml:"provider"`
-	LocationID       string  `yaml:"locationId"`
-	APIKey           string  `yaml:"apiKey"`
-	MaxDelay         string  `yaml:"maxDelay"`
-	PeakThreshold    float64 `yaml:"peakThreshold"`
-	OffPeakThreshold float64 `yaml:"offPeakThreshold"`
+	Enabled   bool       `yaml:"enabled"`
+	Provider  string     `yaml:"provider"` // e.g. "tou" for time-of-use pricing
+	MaxDelay  string     `yaml:"maxDelay"`
+	Schedules []Schedule `yaml:"schedules"` // Time-based pricing periods with their rates
 }
 
 // ObservabilityConfig holds configuration for monitoring and debugging
@@ -110,18 +109,20 @@ func (c *Config) validatePeakHours() error {
 }
 
 func (c *Config) validatePricing() error {
-	if c.Pricing.Provider == "" {
-		return fmt.Errorf("pricing provider is required when pricing is enabled")
+	for i, schedule := range c.Pricing.Schedules {
+		if err := validateSchedule(schedule); err != nil {
+			return fmt.Errorf("invalid schedule at index %d: %v", i, err)
+		}
+		if schedule.PeakRate <= 0 {
+			return fmt.Errorf("peak rate must be positive in schedule at index %d", i)
+		}
+		if schedule.OffPeakRate <= 0 {
+			return fmt.Errorf("off-peak rate must be positive in schedule at index %d", i)
+		}
+		if schedule.PeakRate <= schedule.OffPeakRate {
+			return fmt.Errorf("peak rate must be greater than off-peak rate in schedule at index %d", i)
+		}
 	}
-
-	if c.Pricing.APIKey == "" {
-		return fmt.Errorf("pricing API key is required when pricing is enabled")
-	}
-
-	if c.Pricing.PeakThreshold <= 0 || c.Pricing.OffPeakThreshold <= 0 {
-		return fmt.Errorf("pricing thresholds must be positive")
-	}
-
 	return nil
 }
 

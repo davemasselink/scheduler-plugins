@@ -31,18 +31,10 @@ func LoadFromEnv() (*Config, error) {
 			DefaultRegion:                getEnvOrDefault("DEFAULT_REGION", "US-CAL-CISO"),
 			EnablePodPriorities:          getBoolOrDefault("ENABLE_POD_PRIORITIES", false),
 		},
-		PeakHours: PeakHoursConfig{
-			Enabled:                  getBoolOrDefault("PEAK_HOURS_ENABLED", false),
-			CarbonIntensityThreshold: getFloatOrDefault("PEAK_CARBON_INTENSITY_THRESHOLD", 100.0),
-		},
 		Pricing: PricingConfig{
-			Enabled:          getBoolOrDefault("PRICING_ENABLED", false),
-			Provider:         os.Getenv("PRICING_PROVIDER"),
-			LocationID:       os.Getenv("PRICING_LOCATION_ID"),
-			APIKey:           os.Getenv("PRICING_API_KEY"),
-			MaxDelay:         getEnvOrDefault("PRICING_MAX_DELAY", "6h"),
-			PeakThreshold:    getFloatOrDefault("PRICING_PEAK_THRESHOLD", 0.15),
-			OffPeakThreshold: getFloatOrDefault("PRICING_OFFPEAK_THRESHOLD", 0.10),
+			Enabled:  getBoolOrDefault("PRICING_ENABLED", false),
+			Provider: getEnvOrDefault("PRICING_PROVIDER", "tou"),
+			MaxDelay: getEnvOrDefault("PRICING_MAX_DELAY", "24h"),
 		},
 		Observability: ObservabilityConfig{
 			MetricsEnabled:     getBoolOrDefault("METRICS_ENABLED", true),
@@ -54,11 +46,11 @@ func LoadFromEnv() (*Config, error) {
 		},
 	}
 
-	// Load peak schedules if enabled and path provided
-	if cfg.PeakHours.Enabled {
-		if schedulePath := os.Getenv("PEAK_SCHEDULES_PATH"); schedulePath != "" {
-			if err := loadPeakSchedules(cfg, schedulePath); err != nil {
-				return nil, fmt.Errorf("failed to load peak schedules: %v", err)
+	// Load pricing schedules if enabled and path provided
+	if cfg.Pricing.Enabled {
+		if schedulePath := os.Getenv("PRICING_SCHEDULES_PATH"); schedulePath != "" {
+			if err := loadPricingSchedules(cfg, schedulePath); err != nil {
+				return nil, fmt.Errorf("failed to load pricing schedules: %v", err)
 			}
 		}
 	}
@@ -150,17 +142,27 @@ func getDurationOrDefault(key string, defaultValue time.Duration) time.Duration 
 	return defaultValue
 }
 
-func loadPeakSchedules(cfg *Config, path string) error {
+func loadPricingSchedules(cfg *Config, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("failed to read peak schedules file: %v", err)
+		return fmt.Errorf("failed to read pricing schedules file: %v", err)
 	}
 
-	schedules := &PeakHoursConfig{}
+	schedules := &PricingConfig{}
 	if err := yaml.Unmarshal(data, schedules); err != nil {
-		return fmt.Errorf("failed to parse peak schedules: %v", err)
+		return fmt.Errorf("failed to parse pricing schedules: %v", err)
 	}
 
-	cfg.PeakHours.Schedules = schedules.Schedules
+	// Validate all schedules have same off-peak rate
+	if len(schedules.Schedules) > 1 {
+		offPeakRate := schedules.Schedules[0].OffPeakRate
+		for i, schedule := range schedules.Schedules[1:] {
+			if schedule.OffPeakRate != offPeakRate {
+				return fmt.Errorf("schedule at index %d has different off-peak rate than first schedule", i+1)
+			}
+		}
+	}
+
+	cfg.Pricing.Schedules = schedules.Schedules
 	return nil
 }

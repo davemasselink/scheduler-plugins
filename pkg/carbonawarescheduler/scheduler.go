@@ -18,7 +18,6 @@ import (
 	schedulercache "sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/cache"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/clock"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/config"
-	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/peak"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/pricing"
 )
 
@@ -33,11 +32,10 @@ type CarbonAwareScheduler struct {
 	config *config.Config
 
 	// Components
-	apiClient       *api.Client
-	cache           *schedulercache.Cache
-	peakScheduler   *peak.Scheduler
-	pricingProvider pricing.Provider
-	clock           clock.Clock
+	apiClient   *api.Client
+	cache       *schedulercache.Cache
+	pricingImpl pricing.Implementation
+	clock       clock.Clock
 
 	// Shutdown
 	stopCh chan struct{}
@@ -59,35 +57,21 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 	// Initialize components
 	apiClient := api.NewClient(cfg.API)
 	dataCache := schedulercache.New(cfg.API.CacheTTL, cfg.API.MaxCacheAge)
-	peakScheduler := peak.New(cfg.PeakHours)
 
-	// Initialize pricing provider if enabled
-	var pricingProvider pricing.Provider
-	if cfg.Pricing.Enabled {
-		pricingCfg := &pricing.ProviderConfig{
-			Enabled:    cfg.Pricing.Enabled,
-			Provider:   cfg.Pricing.Provider,
-			LocationID: cfg.Pricing.LocationID,
-			APIKey:     cfg.Pricing.APIKey,
-			MaxDelay:   cfg.Pricing.MaxDelay,
-		}
-		pricingCfg.Thresholds.Peak = cfg.Pricing.PeakThreshold
-		pricingCfg.Thresholds.OffPeak = cfg.Pricing.OffPeakThreshold
-		pricingProvider, err = pricing.NewProvider(pricingCfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize pricing provider: %v", err)
-		}
+	// Initialize pricing implementation if enabled
+	pricingImpl, err := pricing.Factory(cfg.Pricing)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize pricing implementation: %v", err)
 	}
 
 	scheduler := &CarbonAwareScheduler{
-		handle:          h,
-		config:          cfg,
-		apiClient:       apiClient,
-		cache:           dataCache,
-		peakScheduler:   peakScheduler,
-		pricingProvider: pricingProvider,
-		clock:           clock.RealClock{},
-		stopCh:          make(chan struct{}),
+		handle:      h,
+		config:      cfg,
+		apiClient:   apiClient,
+		cache:       dataCache,
+		pricingImpl: pricingImpl,
+		clock:       clock.RealClock{},
+		stopCh:      make(chan struct{}),
 	}
 
 	// Start health check worker
@@ -187,27 +171,33 @@ func (cs *CarbonAwareScheduler) isOptedOut(pod *v1.Pod) bool {
 }
 
 func (cs *CarbonAwareScheduler) checkPricingConstraints(ctx context.Context, pod *v1.Pod) *framework.Status {
-	isPeak, rate, err := cs.pricingProvider.IsPeakPeriod(ctx, cs.config.Pricing.LocationID)
-	if err != nil {
-		return framework.NewStatus(framework.Error, fmt.Sprintf("failed to get electricity price: %v", err))
+	if cs.pricingImpl == nil {
+		return framework.NewStatus(framework.Success, "")
 	}
 
-	// Record current electricity rate
-	period := map[bool]string{true: "peak", false: "off-peak"}[isPeak]
-	ElectricityRateGauge.WithLabelValues(cs.config.Pricing.LocationID, period).Set(rate)
+	rate := cs.pricingImpl.GetCurrentRate(cs.clock.Now())
 
-	// Get threshold from pod annotation or use configured threshold
-	threshold := cs.config.Pricing.OffPeakThreshold
-	if isPeak {
-		threshold = cs.config.Pricing.PeakThreshold
-	}
+	// Get threshold from pod annotation, env var, or use off-peak rate as threshold
+	var threshold float64
 	if val, ok := pod.Annotations["price-aware-scheduler.kubernetes.io/price-threshold"]; ok {
 		if t, err := strconv.ParseFloat(val, 64); err == nil {
 			threshold = t
 		} else {
 			return framework.NewStatus(framework.Error, "invalid electricity price threshold annotation")
 		}
+	} else if len(cs.config.Pricing.Schedules) > 0 {
+		// Use off-peak rate as default threshold
+		threshold = cs.config.Pricing.Schedules[0].OffPeakRate
+	} else {
+		return framework.NewStatus(framework.Error, "no pricing schedules configured")
 	}
+
+	// Record current electricity rate
+	period := "peak"
+	if rate <= threshold {
+		period = "off-peak"
+	}
+	ElectricityRateGauge.WithLabelValues("tou", period).Set(rate)
 
 	if rate > threshold {
 		PriceBasedDelays.WithLabelValues(period).Inc()
@@ -216,9 +206,8 @@ func (cs *CarbonAwareScheduler) checkPricingConstraints(ctx context.Context, pod
 
 		return framework.NewStatus(
 			framework.Unschedulable,
-			fmt.Sprintf("Current electricity rate ($%.3f/kWh) exceeds %s threshold ($%.3f/kWh)",
+			fmt.Sprintf("Current electricity rate ($%.3f/kWh) exceeds threshold ($%.3f/kWh)",
 				rate,
-				period,
 				threshold),
 		)
 	}
@@ -246,9 +235,6 @@ func (cs *CarbonAwareScheduler) checkCarbonIntensityConstraints(ctx context.Cont
 			return framework.NewStatus(framework.Error, "invalid carbon intensity threshold annotation")
 		}
 	}
-
-	// Apply peak hour threshold if applicable
-	threshold = cs.peakScheduler.GetCurrentThreshold(threshold, cs.clock.Now())
 
 	if data.CarbonIntensity > threshold {
 		SchedulingAttempts.WithLabelValues("intensity_exceeded").Inc()

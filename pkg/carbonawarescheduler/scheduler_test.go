@@ -16,8 +16,7 @@ import (
 	schedulercache "sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/cache"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/clock"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/config"
-	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/peak"
-	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/pricing"
+	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/pricing/mock"
 )
 
 // testConfig wraps config.Config to implement runtime.Object
@@ -45,9 +44,8 @@ func setupTest(t *testing.T) func() {
 	}
 }
 
-func newTestScheduler(cfg *config.Config, carbonIntensity float64, isPeak bool, rate float64, mockTime time.Time) *CarbonAwareScheduler {
+func newTestScheduler(cfg *config.Config, carbonIntensity float64, rate float64, mockTime time.Time) *CarbonAwareScheduler {
 	mockClient := api.NewClient(config.APIConfig{
-		Provider:  "mock",
 		Key:       "mock-key",
 		Region:    "mock-region",
 		Timeout:   time.Second,
@@ -62,37 +60,12 @@ func newTestScheduler(cfg *config.Config, carbonIntensity float64, isPeak bool, 
 	})
 
 	return &CarbonAwareScheduler{
-		config:        cfg,
-		apiClient:     mockClient,
-		cache:         cache,
-		peakScheduler: peak.New(config.PeakHoursConfig{}),
-		clock:         clock.NewMockClock(mockTime),
-		pricingProvider: &mockPricingProvider{
-			isPeak: isPeak,
-			rate:   rate,
-		},
+		config:      cfg,
+		apiClient:   mockClient,
+		cache:       cache,
+		pricingImpl: mock.New(rate),
+		clock:       clock.NewMockClock(mockTime),
 	}
-}
-
-type mockPricingProvider struct {
-	pricing.Provider
-	isPeak bool
-	rate   float64
-	err    error
-}
-
-func (m *mockPricingProvider) GetCurrentRate(ctx context.Context, locationID string) (float64, error) {
-	if m.err != nil {
-		return 0, m.err
-	}
-	return m.rate, nil
-}
-
-func (m *mockPricingProvider) IsPeakPeriod(ctx context.Context, locationID string) (bool, float64, error) {
-	if m.err != nil {
-		return false, 0, m.err
-	}
-	return m.isPeak, m.rate, nil
 }
 
 func TestNew(t *testing.T) {
@@ -109,13 +82,10 @@ func TestNew(t *testing.T) {
 			obj: &testConfig{
 				Config: config.Config{
 					API: config.APIConfig{
-						Provider: "test",
-						Key:      "test-key",
-						Region:   "test-region",
+						Key: "test-key",
 					},
 					Scheduling: config.SchedulingConfig{
 						BaseCarbonIntensityThreshold: 200,
-						MaxConcurrentPods:            10,
 					},
 				},
 			},
@@ -149,9 +119,7 @@ func TestPreFilter(t *testing.T) {
 		pod             *v1.Pod
 		carbonIntensity float64
 		threshold       float64
-		isPeak          bool
 		electricityRate float64
-		priceThreshold  float64
 		maxDelay        time.Duration
 		podCreationTime time.Time
 		wantStatus      *framework.Status
@@ -212,7 +180,7 @@ func TestPreFilter(t *testing.T) {
 			wantStatus:      framework.NewStatus(framework.Success, "maximum scheduling delay exceeded"),
 		},
 		{
-			name: "pod should not schedule - peak pricing",
+			name: "pod should not schedule - high electricity rate",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					CreationTimestamp: metav1.NewTime(baseTime),
@@ -220,13 +188,11 @@ func TestPreFilter(t *testing.T) {
 			},
 			carbonIntensity: 150,
 			threshold:       200,
-			isPeak:          true,
 			electricityRate: 0.20,
-			priceThreshold:  0.15,
 			podCreationTime: baseTime,
 			wantStatus: framework.NewStatus(
 				framework.Unschedulable,
-				"Current electricity rate ($0.200/kWh) exceeds peak threshold ($0.150/kWh)",
+				"Current electricity rate ($0.200/kWh) exceeds threshold ($0.150/kWh)",
 			),
 		},
 	}
@@ -236,24 +202,30 @@ func TestPreFilter(t *testing.T) {
 			cfg := &testConfig{
 				Config: config.Config{
 					API: config.APIConfig{
-						Provider: "test",
-						Key:      "test-key",
-						Region:   "test-region",
+						Key:    "test-key",
+						Region: "test-region",
 					},
 					Scheduling: config.SchedulingConfig{
 						BaseCarbonIntensityThreshold: tt.threshold,
 						MaxSchedulingDelay:           tt.maxDelay,
-						MaxConcurrentPods:            10,
 					},
 					Pricing: config.PricingConfig{
-						Enabled:          true,
-						PeakThreshold:    tt.priceThreshold,
-						OffPeakThreshold: tt.priceThreshold,
+						Enabled:  true,
+						Provider: "tou",
+						Schedules: []config.Schedule{
+							{
+								DayOfWeek:   "0,1,2,3,4,5,6", // All days
+								StartTime:   "00:00",
+								EndTime:     "23:59",
+								PeakRate:    0.25,
+								OffPeakRate: 0.15, // This becomes default threshold
+							},
+						},
 					},
 				},
 			}
 
-			scheduler := newTestScheduler(&cfg.Config, tt.carbonIntensity, tt.isPeak, tt.electricityRate, tt.podCreationTime)
+			scheduler := newTestScheduler(&cfg.Config, tt.carbonIntensity, tt.electricityRate, tt.podCreationTime)
 
 			result, status := scheduler.PreFilter(context.Background(), nil, tt.pod)
 			if result != nil {
@@ -273,31 +245,43 @@ func TestCheckPricingConstraints(t *testing.T) {
 	baseTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name             string
-		pod              *v1.Pod
-		isPeak           bool
-		rate             float64
-		peakThreshold    float64
-		offPeakThreshold float64
-		wantStatus       *framework.Status
+		name       string
+		pod        *v1.Pod
+		rate       float64
+		schedules  []config.Schedule
+		wantStatus *framework.Status
 	}{
 		{
-			name:          "under peak threshold",
-			pod:           &v1.Pod{},
-			isPeak:        true,
-			rate:          0.12,
-			peakThreshold: 0.15,
-			wantStatus:    framework.NewStatus(framework.Success, ""),
+			name: "under off-peak rate",
+			pod:  &v1.Pod{},
+			rate: 0.12,
+			schedules: []config.Schedule{
+				{
+					DayOfWeek:   "0,1,2,3,4,5,6",
+					StartTime:   "00:00",
+					EndTime:     "23:59",
+					PeakRate:    0.25,
+					OffPeakRate: 0.15,
+				},
+			},
+			wantStatus: framework.NewStatus(framework.Success, ""),
 		},
 		{
-			name:          "over peak threshold",
-			pod:           &v1.Pod{},
-			isPeak:        true,
-			rate:          0.18,
-			peakThreshold: 0.15,
+			name: "over off-peak rate",
+			pod:  &v1.Pod{},
+			rate: 0.18,
+			schedules: []config.Schedule{
+				{
+					DayOfWeek:   "0,1,2,3,4,5,6",
+					StartTime:   "00:00",
+					EndTime:     "23:59",
+					PeakRate:    0.25,
+					OffPeakRate: 0.15,
+				},
+			},
 			wantStatus: framework.NewStatus(
 				framework.Unschedulable,
-				"Current electricity rate ($0.180/kWh) exceeds peak threshold ($0.150/kWh)",
+				"Current electricity rate ($0.180/kWh) exceeds threshold ($0.150/kWh)",
 			),
 		},
 		{
@@ -309,10 +293,27 @@ func TestCheckPricingConstraints(t *testing.T) {
 					},
 				},
 			},
-			isPeak:        true,
-			rate:          0.18,
-			peakThreshold: 0.15,
-			wantStatus:    framework.NewStatus(framework.Success, ""),
+			rate: 0.18,
+			schedules: []config.Schedule{
+				{
+					DayOfWeek:   "0,1,2,3,4,5,6",
+					StartTime:   "00:00",
+					EndTime:     "23:59",
+					PeakRate:    0.25,
+					OffPeakRate: 0.15,
+				},
+			},
+			wantStatus: framework.NewStatus(framework.Success, ""),
+		},
+		{
+			name:      "no schedules configured",
+			pod:       &v1.Pod{},
+			rate:      0.18,
+			schedules: []config.Schedule{},
+			wantStatus: framework.NewStatus(
+				framework.Error,
+				"no pricing schedules configured",
+			),
 		},
 	}
 
@@ -321,14 +322,14 @@ func TestCheckPricingConstraints(t *testing.T) {
 			cfg := &testConfig{
 				Config: config.Config{
 					Pricing: config.PricingConfig{
-						Enabled:          true,
-						PeakThreshold:    tt.peakThreshold,
-						OffPeakThreshold: tt.offPeakThreshold,
+						Enabled:   true,
+						Provider:  "tou",
+						Schedules: tt.schedules,
 					},
 				},
 			}
 
-			scheduler := newTestScheduler(&cfg.Config, 0, tt.isPeak, tt.rate, baseTime)
+			scheduler := newTestScheduler(&cfg.Config, 0, tt.rate, baseTime)
 
 			got := scheduler.checkPricingConstraints(context.Background(), tt.pod)
 			if got.Code() != tt.wantStatus.Code() || got.Message() != tt.wantStatus.Message() {
@@ -388,9 +389,8 @@ func TestCheckCarbonIntensityConstraints(t *testing.T) {
 			cfg := &testConfig{
 				Config: config.Config{
 					API: config.APIConfig{
-						Provider: "test",
-						Key:      "test-key",
-						Region:   "test-region",
+						Key:    "test-key",
+						Region: "test-region",
 					},
 					Scheduling: config.SchedulingConfig{
 						BaseCarbonIntensityThreshold: tt.threshold,
@@ -398,7 +398,7 @@ func TestCheckCarbonIntensityConstraints(t *testing.T) {
 				},
 			}
 
-			scheduler := newTestScheduler(&cfg.Config, tt.carbonIntensity, false, 0, baseTime)
+			scheduler := newTestScheduler(&cfg.Config, tt.carbonIntensity, 0, baseTime)
 
 			got := scheduler.checkCarbonIntensityConstraints(context.Background(), tt.pod)
 			if got.Code() != tt.wantStatus.Code() || got.Message() != tt.wantStatus.Message() {

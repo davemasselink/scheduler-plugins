@@ -1,202 +1,176 @@
-# Price-Aware Scheduling Provider
+# Price-Aware Scheduling
 
-This package provides the interface and implementations for price-aware scheduling in the Carbon Aware Scheduler.
+This package provides time-of-use (TOU) based price-aware scheduling for the Carbon Aware Scheduler.
 
-## Provider Interface
+## Overview
 
-The pricing provider interface is defined in `provider.go`:
+The pricing package enables scheduling decisions based on time-of-use electricity rates, allowing workloads to be shifted to periods of lower electricity costs. This is particularly useful for organizations with TOU electricity pricing from their utility providers.
+
+## Implementation
+
+The pricing implementation consists of two main components:
+
+1. **Interface**: Defines the common interface for pricing implementations
+2. **TOU Scheduler**: Implements time-of-use based pricing
+
+### Interface
+
+The pricing interface is defined in `interface.go`:
 
 ```go
-type Provider interface {
+type Implementation interface {
     // GetCurrentRate returns the current electricity rate in $/kWh
-    GetCurrentRate(ctx context.Context, locationID string) (float64, error)
-
-    // IsPeakPeriod checks if the current time is within a peak pricing period
-    // Returns: isPeak, currentRate, error
-    IsPeakPeriod(ctx context.Context, locationID string) (bool, float64, error)
+    GetCurrentRate(now time.Time) float64
 }
 ```
+
+### Time-of-Use Implementation
+
+The TOU implementation (`tou/scheduler.go`) provides time-based electricity pricing:
+
+- Configurable base rate and peak multiplier
+- Flexible schedule definition
+- Support for different rates by day of week
+- Simple configuration via ConfigMap
 
 ## Configuration
 
-The provider configuration is defined in `config.go`:
+The TOU pricing configuration consists of two parts:
 
-```go
-type ProviderConfig struct {
-    Enabled    bool   `yaml:"enabled"`    // Enable price-aware scheduling
-    Provider   string `yaml:"provider"`   // Provider name (e.g., "genability")
-    LocationID string `yaml:"locationId"` // Location/utility identifier
-    APIKey     string `yaml:"apiKey"`     // API authentication key
-    MaxDelay   string `yaml:"maxDelay"`   // Maximum scheduling delay
-    Thresholds struct {
-        Peak    float64 `yaml:"peak"`    // Price threshold during peak hours
-        OffPeak float64 `yaml:"offPeak"` // Price threshold during off-peak hours
-    } `yaml:"thresholds"`
-}
+1. **Basic Configuration**:
+```yaml
+pricing:
+  enabled: true
+  provider: "tou"
+  rate: 0.10      # Base rate in $/kWh
+  peakRate: 1.5   # Peak rate multiplier (e.g., 1.5 = 50% more expensive)
+  maxDelay: "24h" # Maximum scheduling delay
 ```
 
-## Implementing a New Provider
+2. **Schedule Configuration**:
+```yaml
+schedules:
+  # Monday-Friday peak pricing periods (4pm-9pm)
+  - dayOfWeek: "1-5"
+    startTime: "16:00"
+    endTime: "21:00"
+  # Weekend peak pricing periods (1pm-7pm)
+  - dayOfWeek: "0,6"
+    startTime: "13:00"
+    endTime: "19:00"
+```
 
-To implement a new pricing provider:
+## Adding New Implementations
 
-1. Create a new file in the pricing package (e.g., `myprovider.go`)
-2. Implement the Provider interface
-3. Add provider initialization to the factory in `provider.go`
+To implement a new pricing strategy:
+
+1. Create a new package under `pricing/`
+2. Implement the `Implementation` interface
+3. Add the implementation to the factory in `interface.go`
+4. Add tests for the new implementation
 
 Example implementation:
 
 ```go
-type MyProvider struct {
-    config ProviderConfig
-    client *http.Client
+package custom
+
+import (
+    "time"
+    "sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/config"
+)
+
+type CustomPricing struct {
+    config config.PricingConfig
 }
 
-func NewMyProvider(config ProviderConfig) (*MyProvider, error) {
-    return &MyProvider{
+func New(config config.PricingConfig) *CustomPricing {
+    return &CustomPricing{
         config: config,
-        client: &http.Client{
-            Timeout: 10 * time.Second,
-        },
-    }, nil
+    }
 }
 
-func (p *MyProvider) GetCurrentRate(ctx context.Context, locationID string) (float64, error) {
-    // Implement rate fetching logic
-    return rate, nil
-}
-
-func (p *MyProvider) IsPeakPeriod(ctx context.Context, locationID string) (bool, float64, error) {
-    // Implement peak period detection logic
-    return isPeak, rate, nil
+func (p *CustomPricing) GetCurrentRate(now time.Time) float64 {
+    // Implement custom pricing logic
+    return rate
 }
 ```
 
-## Built-in Providers
+## Testing
 
-### Genability Provider
+The package includes several test utilities:
 
-The Genability provider (`genability.go`) integrates with the Genability API for real-time electricity pricing data:
+1. **Mock Implementation**: For testing scheduler behavior
+2. **Test Fixtures**: Common test schedules and configurations
+3. **Time Utilities**: Helpers for time-based testing
 
-- Supports multiple utility providers
-- Real-time and historical pricing data
-- Peak/off-peak period detection
-- Rate caching for performance
-
-Configuration:
-```yaml
-pricing:
-  enabled: true
-  provider: "genability"
-  locationId: "utility-zone-1"
-  apiKey: "your-api-key"
-  maxDelay: "12h"
-  thresholds:
-    peak: 0.15    # $/kWh
-    offPeak: 0.10 # $/kWh
-```
-
-### Error Handling
-
-Providers should implement robust error handling:
-
-1. **API Errors**: Handle and categorize API errors appropriately
-2. **Rate Limiting**: Implement backoff/retry logic
-3. **Caching**: Cache responses to handle API outages
-4. **Validation**: Validate rates and thresholds
-
-Example error handling:
+Example test:
 ```go
-func (p *MyProvider) GetCurrentRate(ctx context.Context, locationID string) (float64, error) {
-    // Check cache first
-    if rate, found := p.cache.Get(locationID); found {
-        return rate.(float64), nil
+func TestTOUScheduler(t *testing.T) {
+    cfg := config.PricingConfig{
+        Rate: 0.10,
+        PeakRate: 1.5,
+        Schedules: []config.Schedule{
+            {
+                DayOfWeek: "1-5",
+                StartTime: "16:00",
+                EndTime: "21:00",
+            },
+        },
     }
 
-    // Make API request with retry logic
-    var rate float64
-    err := retry.Do(func() error {
-        var err error
-        rate, err = p.fetchRate(ctx, locationID)
-        return err
-    }, retry.Attempts(3))
-
-    if err != nil {
-        // Return cached data if available
-        if rate, found := p.cache.Get(locationID); found {
-            return rate.(float64), nil
-        }
-        return 0, fmt.Errorf("failed to get rate: %v", err)
+    scheduler := tou.New(cfg)
+    
+    // Test peak period
+    peakTime := time.Date(2024, 1, 1, 17, 0, 0, 0, time.UTC) // Monday 5 PM
+    rate := scheduler.GetCurrentRate(peakTime)
+    if rate != 0.15 { // Base rate * peak multiplier
+        t.Errorf("Expected peak rate 0.15, got %f", rate)
     }
-
-    // Cache successful response
-    p.cache.Set(locationID, rate, time.Minute*5)
-    return rate, nil
 }
 ```
 
 ## Best Practices
 
-1. **Caching**
-   - Cache API responses to reduce latency
-   - Implement TTL-based cache invalidation
-   - Use stale cache data during API outages
+1. **Schedule Design**
+   - Keep schedules simple and predictable
+   - Align with utility TOU periods
+   - Consider workload patterns
 
-2. **Rate Limiting**
-   - Respect API rate limits
-   - Implement exponential backoff
-   - Share rate limiters across instances
+2. **Rate Configuration**
+   - Set reasonable base rates
+   - Use realistic peak multipliers
+   - Document rate sources
 
-3. **Monitoring**
-   - Export metrics for rate queries
-   - Track cache hit rates
-   - Monitor API errors
+3. **Testing**
+   - Test boundary conditions
+   - Verify holiday handling
+   - Check daylight saving transitions
 
-4. **Testing**
-   - Mock API responses in tests
-   - Test error handling paths
-   - Validate rate thresholds
-
-Example metrics:
-```go
-var (
-    rateQueryTotal = prometheus.NewCounterVec(
-        prometheus.CounterOpts{
-            Name: "price_rate_queries_total",
-            Help: "Total number of price rate queries",
-        },
-        []string{"provider", "result"},
-    )
-
-    rateQueryDuration = prometheus.NewHistogramVec(
-        prometheus.HistogramOpts{
-            Name: "price_rate_query_duration_seconds",
-            Help: "Duration of price rate queries",
-        },
-        []string{"provider"},
-    )
-)
-```
+4. **Monitoring**
+   - Track rate changes
+   - Monitor scheduling decisions
+   - Record cost savings
 
 ## Troubleshooting
 
 Common issues and solutions:
 
-1. **High Latency**
-   - Check API response times
-   - Verify cache configuration
-   - Monitor rate limiting
+1. **Unexpected Rates**
+   - Verify schedule configuration
+   - Check time zone handling
+   - Validate rate calculations
 
-2. **Invalid Rates**
-   - Validate API responses
-   - Check threshold configuration
-   - Verify location IDs
+2. **Schedule Issues**
+   - Confirm day of week format
+   - Check time format (24-hour)
+   - Verify schedule overlaps
 
-3. **API Errors**
-   - Check API credentials
-   - Verify network connectivity
-   - Monitor API status
+3. **Performance**
+   - Monitor scheduling latency
+   - Check rate calculation overhead
+   - Verify caching if implemented
 
-4. **Cache Issues**
-   - Check cache size/memory
-   - Monitor cache hit rates
-   - Verify TTL settings
+4. **Configuration**
+   - Validate ConfigMap format
+   - Check environment variables
+   - Verify schedule loading

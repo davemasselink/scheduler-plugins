@@ -34,8 +34,8 @@ build: build-scheduler
 build-scheduler:
 	$(GO_BUILD_ENV) go build -ldflags '-X k8s.io/component-base/version.gitVersion=$(VERSION) -w' -o bin/kube-scheduler cmd/scheduler/main.go
 
-.PHONY: build-images
-build-images:
+.PHONY: build-image
+build-image:
 	BUILDER=$(BUILDER) \
 	PLATFORMS=$(PLATFORMS) \
 	RELEASE_VERSION=$(RELEASE_VERSION) \
@@ -45,9 +45,9 @@ build-images:
 	DISTROLESS_BASE_IMAGE=$(DISTROLESS_BASE_IMAGE) \
 	EXTRA_ARGS=$(EXTRA_ARGS) hack/build-images.sh
 
-.PHONY: build-push-images
-build-push-images: EXTRA_ARGS="--push"
-build-push-images: build-images
+.PHONY: build-push-image
+build-push-image: EXTRA_ARGS="--push"
+build-push-image: build-image
 
 .PHONY: update-gomod
 update-gomod:

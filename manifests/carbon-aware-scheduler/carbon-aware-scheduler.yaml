@@ -45,6 +45,15 @@ subjects:
   namespace: kube-system
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: carbon-aware-scheduler-secrets
+  namespace: kube-system
+type: Opaque
+data:
+  electricity-map-api-key: WU9VUl9FTEVDVFJJQ0lUWV9NQVBfQVBJX0tFWQ== # Base64 encoded "YOUR_ELECTRICITY_MAP_API_KEY"
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: carbon-aware-scheduler-config
@@ -65,20 +74,20 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: carbon-aware-peak-schedules
+  name: carbon-aware-pricing-schedules
   namespace: kube-system
 data:
   schedules.yaml: |
-    # Peak schedule configuration using standard cron format
+    # Time-of-use pricing schedule configuration
     # Format: day-of-week start-time end-time
     # day-of-week: 0-6 (Sunday=0)
     # time format: HH:MM in 24-hour format
     schedules:
-      # Monday-Friday peak hours (typical 4pm-9pm peak period)
+      # Monday-Friday peak pricing periods (4pm-9pm)
       - dayOfWeek: "1-5"
         startTime: "16:00"
         endTime: "21:00"
-      # Weekend peak hours (example different schedule)
+      # Weekend peak pricing periods (1pm-7pm)
       - dayOfWeek: "0,6" 
         startTime: "13:00"
         endTime: "19:00"
@@ -109,19 +118,30 @@ spec:
       - command:
         - /bin/kube-scheduler
         - --config=/etc/kubernetes/carbon-aware-scheduler/carbon-aware-scheduler-config.yaml
-        image: docker.io/dmasselink/carbon-aware-scheduler:v20250215-
+        image: docker.io/dmasselink/carbon-aware-scheduler:v20250223-
         imagePullPolicy: Always
         env:
         - name: ELECTRICITY_MAP_API_KEY
-          value: "hoc7ohOR0B9jrdWwNX3h"
+          valueFrom:
+            secretKeyRef:
+              name: carbon-aware-scheduler-secrets
+              key: electricity-map-api-key
         - name: CARBON_INTENSITY_THRESHOLD
           value: "200.0"
-        - name: PEAK_CARBON_INTENSITY_THRESHOLD
-          value: "300.0"
         - name: MAX_SCHEDULING_DELAY
           value: "24h"
-        - name: PEAK_SCHEDULES_PATH
-          value: "/etc/kubernetes/carbon-aware-scheduler/peak-schedules.yaml"
+        - name: PRICING_ENABLED
+          value: "false"
+        - name: PRICING_PROVIDER
+          value: "tou"
+        - name: PRICING_BASE_RATE
+          value: "0.10"
+        - name: PRICING_PEAK_RATE
+          value: "1.5"
+        - name: PRICING_MAX_DELAY
+          value: "6h"
+        - name: PRICING_SCHEDULES_PATH
+          value: "/etc/kubernetes/carbon-aware-scheduler/pricing-schedules.yaml"
         livenessProbe:
           httpGet:
             path: /healthz
@@ -142,8 +162,8 @@ spec:
         volumeMounts:
           - name: config-volume
             mountPath: /etc/kubernetes/carbon-aware-scheduler
-          - name: peak-schedules-volume
-            mountPath: /etc/kubernetes/carbon-aware-scheduler/peak-schedules.yaml
+          - name: pricing-schedules-volume
+            mountPath: /etc/kubernetes/carbon-aware-scheduler/pricing-schedules.yaml
             subPath: schedules.yaml
       hostNetwork: false
       hostPID: false
@@ -151,6 +171,6 @@ spec:
         - name: config-volume
           configMap:
             name: carbon-aware-scheduler-config
-        - name: peak-schedules-volume
+        - name: pricing-schedules-volume
           configMap:
-            name: carbon-aware-peak-schedules
+            name: carbon-aware-pricing-schedules
