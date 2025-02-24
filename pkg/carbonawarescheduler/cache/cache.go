@@ -31,10 +31,12 @@ type metrics struct {
 }
 
 // New creates a new cache instance
-func New(ttl, maxAge time.Duration) *Cache {
+func New(ttl time.Duration, maxAge time.Duration) *Cache {
 	c := &Cache{
-		data:    make(map[string]*cacheEntry),
-		ttl:     ttl,
+		data: make(map[string]*cacheEntry),
+		// For cache freshness purposes at get time.
+		ttl: ttl,
+		// Age to clean-up unaccessed items.
 		maxAge:  maxAge,
 		stopCh:  make(chan struct{}),
 		metrics: &metrics{},

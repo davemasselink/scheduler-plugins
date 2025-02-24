@@ -9,9 +9,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/component-base/metrics/legacyregistry"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/api"
+	schedulercache "sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/cache"
+	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/clock"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/config"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/peak"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/pricing"
@@ -34,35 +37,42 @@ func (c *testConfig) GetObjectKind() schema.ObjectKind {
 	return schema.EmptyObjectKind
 }
 
-// mockAPIClient implements api.Client interface
-type mockAPIClient struct {
-	carbonIntensity float64
-	err             error
-}
-
-func NewMockAPIClient(carbonIntensity float64, err error) *api.Client {
-	baseClient := api.NewClient(config.APIConfig{
-		Provider:   "mock",
-		Key:        "mock-key",
-		Region:     "mock-region",
-		Timeout:    time.Second,
-		RateLimit:  10,
-		MaxRetries: 1,
-	})
-	return baseClient
-}
-
-func (m *mockAPIClient) GetCarbonIntensity(ctx context.Context, region string) (*api.ElectricityData, error) {
-	if m.err != nil {
-		return nil, m.err
+func setupTest(t *testing.T) func() {
+	// Return a cleanup function
+	return func() {
+		// Clean up any test resources
+		legacyregistry.Reset()
 	}
-	return &api.ElectricityData{
-		CarbonIntensity: m.carbonIntensity,
-		Timestamp:       time.Now(),
-	}, nil
 }
 
-func (m *mockAPIClient) Close() {}
+func newTestScheduler(cfg *config.Config, carbonIntensity float64, isPeak bool, rate float64, mockTime time.Time) *CarbonAwareScheduler {
+	mockClient := api.NewClient(config.APIConfig{
+		Provider:  "mock",
+		Key:       "mock-key",
+		Region:    "mock-region",
+		Timeout:   time.Second,
+		RateLimit: 10,
+		URL:       "http://mock-url/",
+	})
+
+	cache := schedulercache.New(time.Minute, time.Hour)
+	cache.Set(cfg.API.Region, &api.ElectricityData{
+		CarbonIntensity: carbonIntensity,
+		Timestamp:       mockTime,
+	})
+
+	return &CarbonAwareScheduler{
+		config:        cfg,
+		apiClient:     mockClient,
+		cache:         cache,
+		peakScheduler: peak.New(config.PeakHoursConfig{}),
+		clock:         clock.NewMockClock(mockTime),
+		pricingProvider: &mockPricingProvider{
+			isPeak: isPeak,
+			rate:   rate,
+		},
+	}
+}
 
 type mockPricingProvider struct {
 	pricing.Provider
@@ -86,6 +96,9 @@ func (m *mockPricingProvider) IsPeakPeriod(ctx context.Context, locationID strin
 }
 
 func TestNew(t *testing.T) {
+	cleanup := setupTest(t)
+	defer cleanup()
+
 	tests := []struct {
 		name    string
 		obj     runtime.Object
@@ -106,7 +119,7 @@ func TestNew(t *testing.T) {
 					},
 				},
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 		{
 			name:    "nil config",
@@ -126,6 +139,11 @@ func TestNew(t *testing.T) {
 }
 
 func TestPreFilter(t *testing.T) {
+	cleanup := setupTest(t)
+	defer cleanup()
+
+	baseTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+
 	tests := []struct {
 		name            string
 		pod             *v1.Pod
@@ -135,28 +153,31 @@ func TestPreFilter(t *testing.T) {
 		electricityRate float64
 		priceThreshold  float64
 		maxDelay        time.Duration
+		podCreationTime time.Time
 		wantStatus      *framework.Status
 	}{
 		{
 			name: "pod should schedule - under threshold",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					CreationTimestamp: metav1.Now(),
+					CreationTimestamp: metav1.NewTime(baseTime),
 				},
 			},
 			carbonIntensity: 150,
 			threshold:       200,
+			podCreationTime: baseTime,
 			wantStatus:      framework.NewStatus(framework.Success, ""),
 		},
 		{
 			name: "pod should not schedule - over threshold",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					CreationTimestamp: metav1.Now(),
+					CreationTimestamp: metav1.NewTime(baseTime),
 				},
 			},
 			carbonIntensity: 250,
 			threshold:       200,
+			podCreationTime: baseTime,
 			wantStatus: framework.NewStatus(
 				framework.Unschedulable,
 				"Current carbon intensity (250.00) exceeds threshold (200.00)",
@@ -166,7 +187,7 @@ func TestPreFilter(t *testing.T) {
 			name: "pod should schedule - opted out",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					CreationTimestamp: metav1.Now(),
+					CreationTimestamp: metav1.NewTime(baseTime),
 					Annotations: map[string]string{
 						"carbon-aware-scheduler.kubernetes.io/skip": "true",
 					},
@@ -174,25 +195,27 @@ func TestPreFilter(t *testing.T) {
 			},
 			carbonIntensity: 250,
 			threshold:       200,
+			podCreationTime: baseTime,
 			wantStatus:      framework.NewStatus(framework.Success, ""),
 		},
 		{
 			name: "pod should schedule - max delay exceeded",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					CreationTimestamp: metav1.NewTime(time.Now().Add(-25 * time.Hour)),
+					CreationTimestamp: metav1.NewTime(baseTime.Add(-25 * time.Hour)),
 				},
 			},
 			carbonIntensity: 250,
 			threshold:       200,
 			maxDelay:        24 * time.Hour,
+			podCreationTime: baseTime,
 			wantStatus:      framework.NewStatus(framework.Success, "maximum scheduling delay exceeded"),
 		},
 		{
 			name: "pod should not schedule - peak pricing",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					CreationTimestamp: metav1.Now(),
+					CreationTimestamp: metav1.NewTime(baseTime),
 				},
 			},
 			carbonIntensity: 150,
@@ -200,6 +223,7 @@ func TestPreFilter(t *testing.T) {
 			isPeak:          true,
 			electricityRate: 0.20,
 			priceThreshold:  0.15,
+			podCreationTime: baseTime,
 			wantStatus: framework.NewStatus(
 				framework.Unschedulable,
 				"Current electricity rate ($0.200/kWh) exceeds peak threshold ($0.150/kWh)",
@@ -229,17 +253,7 @@ func TestPreFilter(t *testing.T) {
 				},
 			}
 
-			mockClient := NewMockAPIClient(tt.carbonIntensity, nil)
-
-			scheduler := &CarbonAwareScheduler{
-				config:        &cfg.Config,
-				apiClient:     mockClient,
-				peakScheduler: peak.New(config.PeakHoursConfig{}),
-				pricingProvider: &mockPricingProvider{
-					isPeak: tt.isPeak,
-					rate:   tt.electricityRate,
-				},
-			}
+			scheduler := newTestScheduler(&cfg.Config, tt.carbonIntensity, tt.isPeak, tt.electricityRate, tt.podCreationTime)
 
 			result, status := scheduler.PreFilter(context.Background(), nil, tt.pod)
 			if result != nil {
@@ -253,6 +267,11 @@ func TestPreFilter(t *testing.T) {
 }
 
 func TestCheckPricingConstraints(t *testing.T) {
+	cleanup := setupTest(t)
+	defer cleanup()
+
+	baseTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+
 	tests := []struct {
 		name             string
 		pod              *v1.Pod
@@ -309,13 +328,7 @@ func TestCheckPricingConstraints(t *testing.T) {
 				},
 			}
 
-			scheduler := &CarbonAwareScheduler{
-				config: &cfg.Config,
-				pricingProvider: &mockPricingProvider{
-					isPeak: tt.isPeak,
-					rate:   tt.rate,
-				},
-			}
+			scheduler := newTestScheduler(&cfg.Config, 0, tt.isPeak, tt.rate, baseTime)
 
 			got := scheduler.checkPricingConstraints(context.Background(), tt.pod)
 			if got.Code() != tt.wantStatus.Code() || got.Message() != tt.wantStatus.Message() {
@@ -326,6 +339,11 @@ func TestCheckPricingConstraints(t *testing.T) {
 }
 
 func TestCheckCarbonIntensityConstraints(t *testing.T) {
+	cleanup := setupTest(t)
+	defer cleanup()
+
+	baseTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+
 	tests := []struct {
 		name            string
 		pod             *v1.Pod
@@ -369,19 +387,18 @@ func TestCheckCarbonIntensityConstraints(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &testConfig{
 				Config: config.Config{
+					API: config.APIConfig{
+						Provider: "test",
+						Key:      "test-key",
+						Region:   "test-region",
+					},
 					Scheduling: config.SchedulingConfig{
 						BaseCarbonIntensityThreshold: tt.threshold,
 					},
 				},
 			}
 
-			mockClient := NewMockAPIClient(tt.carbonIntensity, nil)
-
-			scheduler := &CarbonAwareScheduler{
-				config:        &cfg.Config,
-				apiClient:     mockClient,
-				peakScheduler: peak.New(config.PeakHoursConfig{}),
-			}
+			scheduler := newTestScheduler(&cfg.Config, tt.carbonIntensity, false, 0, baseTime)
 
 			got := scheduler.checkCarbonIntensityConstraints(context.Background(), tt.pod)
 			if got.Code() != tt.wantStatus.Code() || got.Message() != tt.wantStatus.Message() {

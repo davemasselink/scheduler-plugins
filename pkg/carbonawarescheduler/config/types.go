@@ -16,7 +16,6 @@ type Config struct {
 
 // APIConfig holds configuration for external API interactions
 type APIConfig struct {
-	Provider    string        `yaml:"provider"`
 	Key         string        `yaml:"key"`
 	URL         string        `yaml:"url"`
 	Region      string        `yaml:"region"`
@@ -32,7 +31,6 @@ type APIConfig struct {
 type SchedulingConfig struct {
 	BaseCarbonIntensityThreshold float64       `yaml:"baseCarbonIntensityThreshold"`
 	MaxSchedulingDelay           time.Duration `yaml:"maxSchedulingDelay"`
-	MaxConcurrentPods            int           `yaml:"maxConcurrentPods"`
 	DefaultRegion                string        `yaml:"defaultRegion"`
 	EnablePodPriorities          bool          `yaml:"enablePodPriorities"`
 }
@@ -78,16 +76,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("API key is required")
 	}
 
-	if c.API.Provider == "" {
-		return fmt.Errorf("API provider is required")
-	}
-
 	if c.Scheduling.BaseCarbonIntensityThreshold <= 0 {
 		return fmt.Errorf("base carbon intensity threshold must be positive")
-	}
-
-	if c.Scheduling.MaxConcurrentPods <= 0 {
-		return fmt.Errorf("max concurrent pods must be positive")
 	}
 
 	if c.PeakHours.Enabled {

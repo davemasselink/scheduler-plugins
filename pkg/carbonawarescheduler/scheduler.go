@@ -3,18 +3,20 @@ package carbonawarescheduler
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/component-base/metrics/legacyregistry"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/api"
 	schedulercache "sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/cache"
+	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/clock"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/config"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/peak"
 	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/pricing"
@@ -35,10 +37,7 @@ type CarbonAwareScheduler struct {
 	cache           *schedulercache.Cache
 	peakScheduler   *peak.Scheduler
 	pricingProvider pricing.Provider
-
-	// Scheduling state
-	mutex               sync.RWMutex
-	currentlyScheduling int
+	clock           clock.Clock
 
 	// Shutdown
 	stopCh chan struct{}
@@ -46,7 +45,6 @@ type CarbonAwareScheduler struct {
 
 var (
 	_ framework.PreFilterPlugin = &CarbonAwareScheduler{}
-	_ framework.PostBindPlugin  = &CarbonAwareScheduler{}
 	_ framework.Plugin          = &CarbonAwareScheduler{}
 )
 
@@ -82,15 +80,14 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 	}
 
 	scheduler := &CarbonAwareScheduler{
-		handle:              h,
-		config:              cfg,
-		apiClient:           apiClient,
-		cache:               dataCache,
-		peakScheduler:       peakScheduler,
-		pricingProvider:     pricingProvider,
-		mutex:               sync.RWMutex{},
-		currentlyScheduling: 0,
-		stopCh:              make(chan struct{}),
+		handle:          h,
+		config:          cfg,
+		apiClient:       apiClient,
+		cache:           dataCache,
+		peakScheduler:   peakScheduler,
+		pricingProvider: pricingProvider,
+		clock:           clock.RealClock{},
+		stopCh:          make(chan struct{}),
 	}
 
 	// Start health check worker
@@ -106,6 +103,22 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 		},
 	)
 
+	// Start metrics server (insecure) on a separate mux
+	go func() {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", legacyregistry.Handler())
+
+		metricsServer := &http.Server{
+			Addr:    ":2112",
+			Handler: metricsMux,
+		}
+
+		klog.InfoS("Starting metrics server", "addr", ":2112")
+		if err := metricsServer.ListenAndServe(); err != nil {
+			klog.ErrorS(err, "Failed to start metrics server")
+		}
+	}()
+
 	return scheduler, nil
 }
 
@@ -116,9 +129,9 @@ func (cs *CarbonAwareScheduler) Name() string {
 
 // PreFilter implements the PreFilter interface
 func (cs *CarbonAwareScheduler) PreFilter(ctx context.Context, state *framework.CycleState, pod *v1.Pod) (*framework.PreFilterResult, *framework.Status) {
-	startTime := time.Now()
+	startTime := cs.clock.Now()
 	defer func() {
-		PodSchedulingLatency.WithLabelValues("total").Observe(time.Since(startTime).Seconds())
+		PodSchedulingLatency.WithLabelValues("total").Observe(cs.clock.Since(startTime).Seconds())
 	}()
 
 	// Check if pod has been waiting too long
@@ -145,34 +158,12 @@ func (cs *CarbonAwareScheduler) PreFilter(ctx context.Context, state *framework.
 		return nil, status
 	}
 
-	// Check concurrent pod limits
-	cs.mutex.Lock()
-	if cs.currentlyScheduling >= cs.config.Scheduling.MaxConcurrentPods {
-		cs.mutex.Unlock()
-		return nil, framework.NewStatus(
-			framework.Unschedulable,
-			fmt.Sprintf("Max concurrent pods (%d) reached",
-				cs.config.Scheduling.MaxConcurrentPods),
-		)
-	}
-	cs.currentlyScheduling++
-	cs.mutex.Unlock()
-
 	return nil, framework.NewStatus(framework.Success, "")
 }
 
 // PreFilterExtensions returns nil as this plugin does not need extensions
 func (cs *CarbonAwareScheduler) PreFilterExtensions() framework.PreFilterExtensions {
 	return nil
-}
-
-// PostBind is called after a pod is successfully bound
-func (cs *CarbonAwareScheduler) PostBind(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) {
-	cs.mutex.Lock()
-	defer cs.mutex.Unlock()
-	if cs.currentlyScheduling > 0 {
-		cs.currentlyScheduling--
-	}
 }
 
 // Close cleans up resources
@@ -185,7 +176,7 @@ func (cs *CarbonAwareScheduler) Close() error {
 
 func (cs *CarbonAwareScheduler) hasExceededMaxDelay(pod *v1.Pod) bool {
 	if creationTime := pod.CreationTimestamp; !creationTime.IsZero() {
-		return time.Since(creationTime.Time) > cs.config.Scheduling.MaxSchedulingDelay
+		return cs.clock.Since(creationTime.Time) > cs.config.Scheduling.MaxSchedulingDelay
 	}
 	return false
 }
@@ -257,7 +248,7 @@ func (cs *CarbonAwareScheduler) checkCarbonIntensityConstraints(ctx context.Cont
 	}
 
 	// Apply peak hour threshold if applicable
-	threshold = cs.peakScheduler.GetCurrentThreshold(threshold, time.Now())
+	threshold = cs.peakScheduler.GetCurrentThreshold(threshold, cs.clock.Now())
 
 	if data.CarbonIntensity > threshold {
 		SchedulingAttempts.WithLabelValues("intensity_exceeded").Inc()

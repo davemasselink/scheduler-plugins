@@ -15,7 +15,6 @@ import (
 func LoadFromEnv() (*Config, error) {
 	cfg := &Config{
 		API: APIConfig{
-			Provider:    os.Getenv("ELECTRICITY_MAP_API_PROVIDER"),
 			Key:         os.Getenv("ELECTRICITY_MAP_API_KEY"),
 			URL:         getEnvOrDefault("ELECTRICITY_MAP_API_URL", "https://api.electricitymap.org/v3/carbon-intensity/latest?zone="),
 			Region:      getEnvOrDefault("ELECTRICITY_MAP_API_REGION", "US-CAL-CISO"),
@@ -29,7 +28,6 @@ func LoadFromEnv() (*Config, error) {
 		Scheduling: SchedulingConfig{
 			BaseCarbonIntensityThreshold: getFloatOrDefault("CARBON_INTENSITY_THRESHOLD", 150.0),
 			MaxSchedulingDelay:           getDurationOrDefault("MAX_SCHEDULING_DELAY", 24*time.Hour),
-			MaxConcurrentPods:            getIntOrDefault("MAX_CONCURRENT_PODS", 2),
 			DefaultRegion:                getEnvOrDefault("DEFAULT_REGION", "US-CAL-CISO"),
 			EnablePodPriorities:          getBoolOrDefault("ENABLE_POD_PRIORITIES", false),
 		},
@@ -84,7 +82,6 @@ func Load(obj runtime.Object) (*Config, error) {
 	}
 
 	klog.V(2).InfoS("Loaded configuration",
-		"apiProvider", cfg.API.Provider,
 		"region", cfg.API.Region,
 		"baseThreshold", cfg.Scheduling.BaseCarbonIntensityThreshold,
 		"peakEnabled", cfg.PeakHours.Enabled,
