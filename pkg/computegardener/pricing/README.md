@@ -76,7 +76,7 @@ package custom
 
 import (
     "time"
-    "sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/config"
+    "sigs.k8s.io/scheduler-plugins/pkg/computegardener/config"
 )
 
 type CustomPricing struct {

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/config"
+	"sigs.k8s.io/scheduler-plugins/pkg/computegardener/config"
 )
 
 // Client handles interactions with the electricity data API

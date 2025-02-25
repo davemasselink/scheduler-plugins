@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/api"
+	"sigs.k8s.io/scheduler-plugins/pkg/computegardener/api"
 )
 
 // Cache provides thread-safe caching of electricity data with TTL

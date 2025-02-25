@@ -24,7 +24,7 @@ import (
 	_ "k8s.io/component-base/metrics/prometheus/version"  // for version metric registration
 	"k8s.io/kubernetes/cmd/kube-scheduler/app"
 
-	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler"
+	"sigs.k8s.io/scheduler-plugins/pkg/computegardener"
 	"sigs.k8s.io/scheduler-plugins/pkg/networkaware/networkoverhead"
 	"sigs.k8s.io/scheduler-plugins/pkg/networkaware/topologicalsort"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesources"
@@ -40,7 +40,7 @@ func main() {
 		app.WithPlugin(topologicalsort.Name, topologicalsort.New),
 		app.WithPlugin(noderesources.AllocatableName, noderesources.NewAllocatable),
 		app.WithPlugin(noderesourcetopology.Name, noderesourcetopology.New),
-		app.WithPlugin(carbonawarescheduler.Name, carbonawarescheduler.New),
+		app.WithPlugin(computegardener.Name, computegardener.New),
 	)
 
 	code := cli.Run(command)

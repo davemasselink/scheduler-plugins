@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/config"
-	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/pricing/tou"
+	"sigs.k8s.io/scheduler-plugins/pkg/computegardener/config"
+	"sigs.k8s.io/scheduler-plugins/pkg/computegardener/pricing/tou"
 )
 
 // Implementation defines the interface for electricity pricing implementations

@@ -5,13 +5,26 @@ import (
 	"time"
 )
 
+// PowerConfig holds power consumption settings for nodes
+type PowerConfig struct {
+	DefaultIdlePower float64              `yaml:"defaultIdlePower"` // Default idle power in watts
+	DefaultMaxPower  float64              `yaml:"defaultMaxPower"`  // Default max power in watts
+	NodePowerConfig  map[string]NodePower `yaml:"nodePowerConfig"`  // Per-node power settings
+}
+
+// NodePower holds power settings for a specific node
+type NodePower struct {
+	IdlePower float64 `yaml:"idlePower"` // Idle power in watts
+	MaxPower  float64 `yaml:"maxPower"`  // Max power in watts
+}
+
 // Config holds all configuration for the carbon-aware scheduler
 type Config struct {
 	API           APIConfig           `yaml:"api"`
 	Scheduling    SchedulingConfig    `yaml:"scheduling"`
-	PeakHours     PeakHoursConfig     `yaml:"peakHours"`
 	Pricing       PricingConfig       `yaml:"pricing"`
 	Observability ObservabilityConfig `yaml:"observability"`
+	Power         PowerConfig         `yaml:"power"`
 }
 
 // APIConfig holds configuration for external API interactions
@@ -33,13 +46,6 @@ type SchedulingConfig struct {
 	MaxSchedulingDelay           time.Duration `yaml:"maxSchedulingDelay"`
 	DefaultRegion                string        `yaml:"defaultRegion"`
 	EnablePodPriorities          bool          `yaml:"enablePodPriorities"`
-}
-
-// PeakHoursConfig holds configuration for peak hour scheduling
-type PeakHoursConfig struct {
-	Enabled                  bool       `yaml:"enabled"`
-	CarbonIntensityThreshold float64    `yaml:"carbonIntensityThreshold"`
-	Schedules                []Schedule `yaml:"schedules"`
 }
 
 // Schedule defines a time range with its peak and off-peak rates
@@ -79,29 +85,25 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("base carbon intensity threshold must be positive")
 	}
 
-	if c.PeakHours.Enabled {
-		if err := c.validatePeakHours(); err != nil {
-			return fmt.Errorf("invalid peak hours config: %v", err)
-		}
-	}
-
 	if c.Pricing.Enabled {
 		if err := c.validatePricing(); err != nil {
 			return fmt.Errorf("invalid pricing config: %v", err)
 		}
 	}
 
-	return nil
-}
-
-func (c *Config) validatePeakHours() error {
-	if c.PeakHours.CarbonIntensityThreshold <= 0 {
-		return fmt.Errorf("peak hours carbon intensity threshold must be positive")
+	// Validate power settings
+	if c.Power.DefaultIdlePower <= 0 {
+		return fmt.Errorf("default idle power must be positive")
 	}
-
-	for i, schedule := range c.PeakHours.Schedules {
-		if err := validateSchedule(schedule); err != nil {
-			return fmt.Errorf("invalid schedule at index %d: %v", i, err)
+	if c.Power.DefaultMaxPower <= c.Power.DefaultIdlePower {
+		return fmt.Errorf("default max power must be greater than idle power")
+	}
+	for node, power := range c.Power.NodePowerConfig {
+		if power.IdlePower <= 0 {
+			return fmt.Errorf("idle power for node %s must be positive", node)
+		}
+		if power.MaxPower <= power.IdlePower {
+			return fmt.Errorf("max power must be greater than idle power for node %s", node)
 		}
 	}
 

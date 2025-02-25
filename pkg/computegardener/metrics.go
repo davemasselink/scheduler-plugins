@@ -1,4 +1,4 @@
-package carbonawarescheduler
+package computegardener
 
 import (
 	"k8s.io/component-base/metrics"
@@ -34,17 +34,6 @@ var (
 		[]string{"result"}, // "total", "api_success", "api_error"
 	)
 
-	// RegionSelectionCount counts the number of times each region was selected for scheduling
-	RegionSelectionCount = metrics.NewCounterVec(
-		&metrics.CounterOpts{
-			Subsystem:      schedulerSubsystem,
-			Name:           "region_selection_total",
-			Help:           "Number of times a region was selected for scheduling",
-			StabilityLevel: metrics.ALPHA,
-		},
-		[]string{"region"},
-	)
-
 	// SchedulingAttempts counts the total number of scheduling attempts
 	SchedulingAttempts = metrics.NewCounterVec(
 		&metrics.CounterOpts{
@@ -56,34 +45,60 @@ var (
 		[]string{"result"}, // "success", "error", "skipped", "max_delay_exceeded", "invalid_threshold", "intensity_exceeded"
 	)
 
-	// CarbonSavings estimates the carbon emissions saved through carbon-aware scheduling
-	CarbonSavings = metrics.NewCounter(
-		&metrics.CounterOpts{
-			Subsystem:      schedulerSubsystem,
-			Name:           "carbon_savings_grams",
-			Help:           "Estimated carbon emissions saved (in grams of CO2) through carbon-aware scheduling",
-			StabilityLevel: metrics.ALPHA,
-		},
-	)
-
-	// JobsScheduled counts the total number of jobs that were carbon-aware scheduled
-	JobsScheduled = metrics.NewCounter(
-		&metrics.CounterOpts{
-			Subsystem:      schedulerSubsystem,
-			Name:           "jobs_scheduled_total",
-			Help:           "Total number of jobs that were carbon-aware scheduled",
-			StabilityLevel: metrics.ALPHA,
-		},
-	)
-
-	// AverageCarbonSavingsPerJob tracks the average carbon savings per scheduled job
-	AverageCarbonSavingsPerJob = metrics.NewGauge(
+	// NodeCPUUsage tracks CPU usage on nodes at job start and completion
+	NodeCPUUsage = metrics.NewGaugeVec(
 		&metrics.GaugeOpts{
 			Subsystem:      schedulerSubsystem,
-			Name:           "average_carbon_savings_per_job_grams",
-			Help:           "Average carbon emissions saved per job (in grams of CO2)",
+			Name:           "node_cpu_usage_cores",
+			Help:           "CPU usage in cores on nodes at baseline (bind) and final (completion)",
 			StabilityLevel: metrics.ALPHA,
 		},
+		[]string{"node", "pod", "phase"}, // phase: "baseline", "final"
+	)
+
+	// NodePowerEstimate estimates node power consumption based on CPU usage
+	NodePowerEstimate = metrics.NewGaugeVec(
+		&metrics.GaugeOpts{
+			Subsystem:      schedulerSubsystem,
+			Name:           "node_power_estimate_watts",
+			Help:           "Estimated power consumption in watts based on node CPU usage",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"node", "pod", "phase"}, // phase: "baseline", "final"
+	)
+
+	// JobEnergyUsage tracks estimated energy usage for jobs
+	JobEnergyUsage = metrics.NewHistogramVec(
+		&metrics.HistogramOpts{
+			Subsystem:      schedulerSubsystem,
+			Name:           "job_energy_usage_kwh",
+			Help:           "Estimated energy usage in kWh for completed jobs",
+			Buckets:        metrics.ExponentialBuckets(0.001, 2, 15),
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"pod", "namespace"},
+	)
+
+	// SchedulingEfficiencyMetrics tracks carbon/cost improvements
+	SchedulingEfficiencyMetrics = metrics.NewGaugeVec(
+		&metrics.GaugeOpts{
+			Subsystem:      schedulerSubsystem,
+			Name:           "scheduling_efficiency",
+			Help:           "Scheduling efficiency metrics comparing initial vs actual scheduling time",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"metric", "pod"}, // metric: "carbon_intensity_delta", "electricity_rate_delta"
+	)
+
+	// EstimatedSavings tracks carbon and cost savings
+	EstimatedSavings = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Subsystem:      schedulerSubsystem,
+			Name:           "estimated_savings",
+			Help:           "Estimated savings from carbon-aware scheduling",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"type", "unit"}, // type: "carbon", "cost", unit: "grams_co2", "kwh", "dollars"
 	)
 
 	// ElectricityRateGauge measures the current electricity rate
@@ -108,14 +123,16 @@ var (
 		[]string{"period"}, // "peak" or "off-peak"
 	)
 
-	// CostSavings estimates the cost savings from price-aware scheduling
-	CostSavings = metrics.NewCounter(
-		&metrics.CounterOpts{
+	// JobCarbonEmissions tracks estimated carbon emissions for jobs
+	JobCarbonEmissions = metrics.NewHistogramVec(
+		&metrics.HistogramOpts{
 			Subsystem:      schedulerSubsystem,
-			Name:           "cost_savings_dollars",
-			Help:           "Estimated cost savings (in dollars) from price-aware scheduling",
+			Name:           "job_carbon_emissions_grams",
+			Help:           "Estimated carbon emissions in gCO2eq for completed jobs",
+			Buckets:        metrics.ExponentialBuckets(0.001, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
+		[]string{"pod", "namespace"},
 	)
 )
 
@@ -123,12 +140,13 @@ func init() {
 	// Register all metrics with the legacy registry
 	legacyregistry.MustRegister(CarbonIntensityGauge)
 	legacyregistry.MustRegister(PodSchedulingLatency)
-	legacyregistry.MustRegister(RegionSelectionCount)
 	legacyregistry.MustRegister(SchedulingAttempts)
-	legacyregistry.MustRegister(CarbonSavings)
-	legacyregistry.MustRegister(JobsScheduled)
-	legacyregistry.MustRegister(AverageCarbonSavingsPerJob)
+	legacyregistry.MustRegister(NodeCPUUsage)
+	legacyregistry.MustRegister(NodePowerEstimate)
+	legacyregistry.MustRegister(JobEnergyUsage)
+	legacyregistry.MustRegister(SchedulingEfficiencyMetrics)
+	legacyregistry.MustRegister(EstimatedSavings)
 	legacyregistry.MustRegister(ElectricityRateGauge)
 	legacyregistry.MustRegister(PriceBasedDelays)
-	legacyregistry.MustRegister(CostSavings)
+	legacyregistry.MustRegister(JobCarbonEmissions)
 }

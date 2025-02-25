@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v2"
@@ -44,6 +45,11 @@ func LoadFromEnv() (*Config, error) {
 			LogLevel:           getEnvOrDefault("LOG_LEVEL", "info"),
 			EnableTracing:      getBoolOrDefault("ENABLE_TRACING", false),
 		},
+		Power: PowerConfig{
+			DefaultIdlePower: getFloatOrDefault("NODE_DEFAULT_IDLE_POWER", 100.0),
+			DefaultMaxPower:  getFloatOrDefault("NODE_DEFAULT_MAX_POWER", 400.0),
+			NodePowerConfig:  loadNodePowerConfig(),
+		},
 	}
 
 	// Load pricing schedules if enabled and path provided
@@ -76,8 +82,9 @@ func Load(obj runtime.Object) (*Config, error) {
 	klog.V(2).InfoS("Loaded configuration",
 		"region", cfg.API.Region,
 		"baseThreshold", cfg.Scheduling.BaseCarbonIntensityThreshold,
-		"peakEnabled", cfg.PeakHours.Enabled,
-		"pricingEnabled", cfg.Pricing.Enabled)
+		"pricingEnabled", cfg.Pricing.Enabled,
+		"defaultIdlePower", cfg.Power.DefaultIdlePower,
+		"defaultMaxPower", cfg.Power.DefaultMaxPower)
 
 	return cfg, nil
 }
@@ -140,6 +147,43 @@ func getDurationOrDefault(key string, defaultValue time.Duration) time.Duration 
 			"default", defaultValue)
 	}
 	return defaultValue
+}
+
+// loadNodePowerConfig loads per-node power configurations from environment variables
+func loadNodePowerConfig() map[string]NodePower {
+	config := make(map[string]NodePower)
+
+	// Look for NODE_POWER_CONFIG_[NAME] environment variables
+	// Format: NODE_POWER_CONFIG_worker1=idle:100,max:400
+	for _, env := range os.Environ() {
+		if name, value, found := strings.Cut(env, "="); found && strings.HasPrefix(name, "NODE_POWER_CONFIG_") {
+			nodeName := strings.TrimPrefix(name, "NODE_POWER_CONFIG_")
+			parts := strings.Split(value, ",")
+
+			var power NodePower
+			for _, part := range parts {
+				if key, val, found := strings.Cut(part, ":"); found {
+					switch key {
+					case "idle":
+						if p, err := strconv.ParseFloat(val, 64); err == nil {
+							power.IdlePower = p
+						}
+					case "max":
+						if p, err := strconv.ParseFloat(val, 64); err == nil {
+							power.MaxPower = p
+						}
+					}
+				}
+			}
+
+			// Only add if both values were parsed successfully
+			if power.IdlePower > 0 && power.MaxPower > power.IdlePower {
+				config[nodeName] = power
+			}
+		}
+	}
+
+	return config
 }
 
 func loadPricingSchedules(cfg *Config, path string) error {

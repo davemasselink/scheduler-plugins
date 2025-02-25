@@ -3,7 +3,7 @@ package mock
 import (
 	"time"
 
-	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/pricing"
+	"sigs.k8s.io/scheduler-plugins/pkg/computegardener/pricing"
 )
 
 // MockPricing implements the pricing.Implementation interface for testing

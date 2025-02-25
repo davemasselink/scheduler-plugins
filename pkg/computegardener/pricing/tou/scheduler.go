@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"sigs.k8s.io/scheduler-plugins/pkg/carbonawarescheduler/config"
+	"sigs.k8s.io/scheduler-plugins/pkg/computegardener/config"
 )
 
 // Scheduler handles time-of-use electricity pricing schedules

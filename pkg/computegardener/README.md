@@ -128,7 +128,7 @@ The scheduler follows this decision flow:
 make test
 
 # Run specific test
-go test -v ./pkg/carbonawarescheduler/... -run TestName
+go test -v ./pkg/computegardener/... -run TestName
 
 # Run tests with coverage
 make test-coverage
